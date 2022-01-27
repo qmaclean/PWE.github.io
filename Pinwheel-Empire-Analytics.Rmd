@@ -1,0 +1,2655 @@
+---
+title: "Pinwheel Empire Analytics"
+author: "Quinn MacLean"
+output: html_document
+
+---
+[Quinn MacLean's Personal Twitter](https://twitter.com/QuinnsWisdom) 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(devtools)
+
+
+
+library(knitr)
+library(tidyverse)
+library(hoopR)
+library(nbastatR)
+library(teamcolors)
+library(RCurl)
+library(ggimage)
+library(ggrepel)
+library(ggthemes)
+library(kableExtra)
+library(NBAr)
+library(rjson)
+library(png)
+library(jpeg)
+library(RCurl)
+library(grid)
+library(slickR)
+library(BasketballAnalyzeR)
+library(ballr)
+library(hexbin)
+library(gt)
+
+
+future::plan("multisession")
+
+tbx<-load_nba_team_box(2010:2022)
+
+bx<-hoopR::load_nba_player_box(2010:2022)
+
+
+
+
+
+
+
+bx<-bx %>%
+  filter(min > 0)
+
+#clean up team names
+bx<-bx %>%
+  mutate(team_abbreviation = case_when(
+    team_abbreviation == "GS" ~ "GSW",
+    team_abbreviation == "SA" ~ "SAS",
+    team_abbreviation == "NY" ~ "NYK",
+    team_abbreviation == "NO" ~ "NOP",
+    team_abbreviation == "UTAH" ~ "UTA",
+    TRUE ~ team_abbreviation
+  ))
+
+
+bx<-bx %>%
+  tibble() %>%
+  separate(fg,c("fgm","fga"),remove=F)
+
+#split fg3
+bx<-bx %>%
+  tibble() %>%
+  separate(fg3,c("fgm3","fga3"),remove=F)
+
+#split ft
+bx<-bx %>%
+  tibble() %>%
+  separate(ft,c("ftm","fta"),remove=F)
+
+### remove character of field goals
+bx<-bx %>%
+  dplyr::select(-fg,-fg3,-ft)
+
+## convert to numeric
+bx<-bx %>%
+  mutate(g = 1,
+         min = as.numeric(min),
+         fgm = as.numeric(fgm),
+         fga = as.numeric(fga),
+         fgm3 = as.numeric(fgm3),
+         fga3 = as.numeric(fga3),
+         ftm = as.numeric(ftm),
+         fta = as.numeric(fta),
+         oreb = as.numeric(oreb),
+         dreb = as.numeric(dreb),
+         reb = as.numeric(reb),
+         ast = as.numeric(ast),
+         stl = as.numeric(stl),
+         blk = as.numeric(blk),
+         to = as.numeric(to),
+         pf = as.numeric(pf),
+         pts = as.numeric(pts),
+         gs = ifelse(starter == TRUE,1,0))
+
+
+vars<-c("g","gs","min","fgm","fga","fgm3","fga3","ftm","fta","oreb","dreb","reb","ast","stl","blk","to","pf","pts")
+
+s_totals<-bx %>%
+  group_by(athlete_display_name,athlete_id,season,team_name,athlete_position_name) %>%
+  summarize_at(vars,sum,na.rm = TRUE)
+
+
+s_totals<- s_totals %>%
+  mutate(GS_pct = gs/g,
+         FG_pct = fgm/fga,
+         FG3_pct = fgm3/fga3,
+         FT_pct = ftm/fta,
+         min_g = min/g,
+         fga_g = fga/g,
+         fga3_g = fga3/g,
+         fta_g = fta/g,
+         reb_g = reb/g,
+         ast_g = ast/g,
+         stl_g = stl/g,
+         blk_g = blk/g,
+         to_g = to/g,
+         pf_g = pf/g,
+         pts_g = pts/g
+  )
+
+s_totals<-s_totals %>%
+  arrange(athlete_id,season)
+
+s_totals<-s_totals %>%
+  mutate(fga_g_prev = ifelse(athlete_id == lag(athlete_id), lag(fga_g), NA))
+
+teamcolors<-teamcolors %>% filter(league == "nba")
+
+
+
+
+plyr<-get_playerbio(2021)
+
+
+plyr$playerImg.URL <- paste("https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/",plyr$player_id,".png", sep="")
+
+
+s_totals<-s_totals %>%
+  left_join(teamcolors,by=c("team_name"="mascot")) %>%
+  left_join(plyr,by=c("athlete_display_name" = "player_name"))
+
+#### add rank ##
+s_totals<-s_totals %>%
+  group_by(season) %>%
+  mutate(fga_g_rank = order(fga_g,decreasing = FALSE),
+         pts_g_rank = order(pts_g,decreasing = FALSE),fga3_g_rank = order(fga3_g,decreasing = FALSE))
+
+
+####  hustle stats ###
+hustle<-nba_leaguehustlestatsplayer(season = "2021-22")
+
+hustle<-as.data.frame(hustle$HustleStatsPlayer)
+
+hustle<-hustle %>%
+  left_join(plyr,by=c("PLAYER_NAME" = "player_name"))
+
+
+##### pair of 2s
+adv_pairs <- get_all_lineups(2021,2,c('Advanced'))
+base_pairs<- get_all_lineups(2021,2,c('Base'))
+scoring_pairs<- get_all_lineups(2021,2,c('Scoring'))
+Misc_pairs<- get_all_lineups(2021,2,c('Misc'))
+Opp_pairs<- get_all_lineups(2021,2,c('Opponent'))
+
+
+#### 5 man lineup ###
+adv_lineup <- get_all_lineups(2021,5,c('Advanced'))
+
+
+
+
+
+#### FOUR FACTORS DATA
+selectedSeasons<-c(2010:2022)
+#GET GAME IDS
+gameIds_Reg <- suppressWarnings(seasons_schedule(seasons = selectedSeasons, season_types = "Regular Season") %>% select(idGame, slugMatchup))
+gameIds_PO <- suppressWarnings(seasons_schedule(seasons = selectedSeasons, season_types = "Playoffs") %>% select(idGame, slugMatchup))
+gameIds_all <- rbind(gameIds_Reg, gameIds_PO)
+## Retrieve gamelog data for players and teams
+#####################
+# Get player gamelogs
+#P_gamelog_reg <- suppressWarnings(game_logs(seasons = selectedSeasons, league = "NBA", result_types = "player", season_types = "Regular Season"))
+#P_gamelog_po <- #suppressWarnings(game_logs(seasons #= selectedSeasons, league = "NBA", #result_types = "player", #season_types = "Playoffs"))
+#P_gamelog_all <- P_gamelog_reg 
+
+#View(head(P_gamelog_all))
+
+# Get team gamelogs
+T_gamelog_reg <- suppressWarnings(game_logs(seasons = selectedSeasons, league = "NBA", result_types = "team", season_types = "Regular Season"))
+
+T_gamelog_all <- T_gamelog_reg
+
+# Create Tbox (Team boxscore) per season
+Tbox_all <- T_gamelog_all %>%
+  group_by("Season"=yearSeason, "Team"=slugTeam) %>%
+  dplyr::summarise(GP=n(), MIN=sum(round(minutesTeam/5)),
+                   PTS=sum(ptsTeam),
+                   W=sum(outcomeGame=="W"), L=sum(outcomeGame=="L"),
+                   P2M=sum(fg2mTeam), P2A=sum(fg2aTeam), P2p=P2M/P2A,
+                   P3M=sum(fg3mTeam), P3A=sum(fg3aTeam), P3p=P3M/P3A,
+                   FTM=sum(ftmTeam), FTA=sum(ftaTeam), FTp=FTM/FTA,
+                   OREB=sum(orebTeam), DREB=sum(drebTeam), AST=sum(astTeam),
+                   TOV=sum(tovTeam), STL=sum(stlTeam), BLK=sum(blkTeam),
+                   PF=sum(pfTeam), PM=sum(plusminusTeam)) %>%
+  as.data.frame()
+
+# Create Obox (Opponent Team boxscore) per season
+Obox_all <- T_gamelog_all %>%
+  group_by("Season"=yearSeason, "Team"=slugOpponent) %>%
+  dplyr::summarise(GP=n(), MIN=sum(round(minutesTeam/5)),
+                   PTS=sum(ptsTeam),
+                   W=sum(outcomeGame=="L"), L=sum(outcomeGame=="W"),
+                   P2M=sum(fg2mTeam), P2A=sum(fg2aTeam), P2p=P2M/P2A,
+                   P3M=sum(fg3mTeam), P3A=sum(fg3aTeam), P3p=P3M/P3A,
+                   FTM=sum(ftmTeam), FTA=sum(ftaTeam), FTp=FTM/FTA,
+                   OREB=sum(orebTeam), DREB=sum(drebTeam), AST=sum(astTeam),
+                   TOV=sum(tovTeam), STL=sum(stlTeam), BLK=sum(blkTeam),
+                   PF=sum(pfTeam), PM=sum(plusminusTeam)) %>%
+  as.data.frame()
+
+#colnames(Obox_all)<-paste0('opp_', colnames(Obox_all))
+
+# Create Pbox (Player boxscore) per season
+
+#Tbox_final<-cbind(Tbox_all,Obox_all)
+
+### add in factors ###
+seasonSelected <- 2022
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF <- fourfactors(Tbox.sel,Obox.sel)
+
+FF<-FF %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF$Year<-"2022"
+
+FF<-FF %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+### previous year ###
+seasonSelected <- 2021
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF1 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF1<-FF1 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF1$Year<-"2021"
+
+FF1<-FF1 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+### previous year ###
+seasonSelected <- 2020
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF2 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF2<-FF2 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF2$Year<-"2020"
+
+FF2<-FF2 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+####
+seasonSelected <- 2019
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF3 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF3<-FF3 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF3$Year<-"2019"
+
+FF3<-FF3 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+####
+seasonSelected <- 2018
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF4 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF4<-FF4 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF4$Year<-"2018"
+
+FF4<-FF4 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+seasonSelected <- 2017
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF5 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF5<-FF5 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF5$Year<-"2017"
+
+FF5<-FF5 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2016
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF6 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF6<-FF6 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF6$Year<-"2016"
+
+FF6<-FF6 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2015
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF7 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF7<-FF7 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF7$Year<-"2015"
+
+FF7<-FF7 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2014
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF8 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF8<-FF8 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF8$Year<-"2014"
+
+FF8<-FF8 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2013
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF9 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF9<-FF9 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF9$Year<-"2013"
+
+FF9<-FF9 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2012
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF10 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF10<-FF10 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF10$Year<-"2012"
+
+FF10<-FF10 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2011
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF11 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF11<-FF11 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF11$Year<-"2011"
+
+FF11<-FF11 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+seasonSelected <- 2010
+Tbox.sel <- subset(Tbox_all,Season==seasonSelected)
+Obox.sel <- subset(Obox_all,Season==seasonSelected)
+
+FF12 <- fourfactors(Tbox.sel,Obox.sel)
+
+FF12<-FF12 %>%
+  rename(
+    `eFG%_OFF` = F1.Off,
+    `eFG%_DEF` = F1.Def,
+    `TOV%_OFF` = F2.Off,
+    `TOV%_DEF` = F2.Def,
+    `ORB%_OFF` = F3.Off,
+    `DRB%_DEF` = F3.Def,
+    `FT/FGA_OFF` = F4.Off,
+    `FT/FGA_DEF` = F4.Def
+  ) 
+
+FF12$Year<-"2010"
+
+FF12<-FF12 %>%
+  mutate(`eFG%_OFF_Rank` = dense_rank(desc(`eFG%_OFF`)),
+         `eFG%_DEF_Rank` = dense_rank(`eFG%_DEF`),
+         `TOV%_OFF_Rank` = dense_rank(`TOV%_OFF`),
+         `TOV%_DEF_Rank` = dense_rank(desc(`TOV%_DEF`)),
+         `ORB%_OFF_Rank` = dense_rank(desc(`ORB%_OFF`)),
+         `DRB%_DEF_Rank` = dense_rank(desc(`DRB%_DEF`)),
+         `FT/FGA_OFF_Rank` = dense_rank(desc(`FT/FGA_OFF`)),
+         `FT/FGA_DEF_Rank` = dense_rank(`FT/FGA_DEF`))
+
+
+FF_final<-rbind(FF,FF1,FF2,FF3,FF4,FF5,FF6,FF7,FF8,FF9,FF10,FF11,FF12)
+
+rm(FF1,FF10,FF11,FF12,FF2,FF3,FF4,FF5,FF6,FF7,FF8,FF9)
+
+
+
+
+                                    
+### team_defense ###
+def_team_21<-get_all_defense(2021,type="team",defense_categories = c("Overall"))
+def_team_21$year<-"2021/22"
+def_team_20<-get_all_defense(2020,type="team",defense_categories = c("Overall"))
+def_team_20$year<-"2020/21"
+colnames(def_team_20)<-paste0('prev_', colnames(def_team_20))
+
+### FOUR FACTORS ###
+team_stats<-hoopR::nba_teamdashboardbylastngames(season = "2021-22",team_id = "1610612757")
+OverallTeam<-as.data.frame(team_stats$OverallTeamDashboard)
+OverallTeam[,c(3:54)]<-as.double(OverallTeam[,c(3:54)])
+Last5<-as.data.frame(team_stats$Last5TeamDashboard)
+Last5[,c(3:54)]<-as.numeric(Last5[,c(3:54)])
+Last10<-as.data.frame(team_stats$Last10TeamDashboard)
+Last10[,c(3:54)]<-as.double(Last10[,c(3:54)])
+Last15<-as.data.frame(team_stats$Last15TeamDashboard)
+Last15[,c(3:54)]<-as.numeric(Last15[,c(3:54)])
+Last20<-as.data.frame(team_stats$Last20TeamDashboard)
+Last20[,c(3:54)]<-as.numeric(Last20[,c(3:54)])
+
+TeamDash<-rbind(OverallTeam,Last5,Last10,Last15,Last20)
+
+## FOUR FACTORS ##
+OverallTeam$eFG_Pct<-(OverallTeam$FGM + (OverallTeam$FG3M))/OverallTeam$FGA
+
+team_defense<-cbind(def_team_21,def_team_20)
+
+team_defense<- team_defense %>%
+  left_join(teamcolors,by=c("team_name"="name"))
+
+FF<-FF %>%
+  left_join(team_defense,by=c("Team" = "team_abbreviation"))
+
+FF_final<-FF_final %>%
+  left_join(team_defense,by=c("Team" = "team_abbreviation"))
+
+
+####
+eff<-get_all_tracking(season=2021,measure_types = c("Efficiency"))
+
+plyr<-get_players(2021)
+
+
+#### Per Game Advanced Stats ###
+Adv_stats<-NBAPerGameAdvStatistics(season = 2022)
+Adv_stats$yr<-"2022"
+Adv_stats1<-NBAPerGameAdvStatistics(season = 2021)
+Adv_stats1$yr<-"2021"
+
+Adv_stats<-rbind(Adv_stats,Adv_stats1)
+
+Adv_stats<-Adv_stats %>%
+  mutate(player = case_when(
+    player == "Derrick Jones" ~ "Derrick Jones Jr.",
+    player == "Dennis Smith" ~ "Dennis Smith Jr.",
+    TRUE ~ player
+  ))
+
+plyr<-get_playerbio(2021)
+
+
+plyr$playerImg.URL <- paste("https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/",plyr$player_id,".png", sep="")
+  
+ Adv_stats<-Adv_stats %>%
+  left_join(plyr,by=c("player" = "player_name")) 
+ 
+
+
+
+
+
+free_agents<-read.csv("2021_free_agents.csv")
+
+free_agents<-free_agents %>%
+  mutate(Player =case_when(
+    Player == "Derrick Jones" ~ "Derrick Jones Jr.",
+    Player == "Dennis Smith" ~ "Dennis Smith Jr.",
+    Player == "Enes Kanter" ~ "Enes Freedom",
+    Player == "Tim Hardaway" ~ "Tim Hardaway Jr.",
+    TRUE ~ Player))
+
+pres_adv_stats<-Adv_stats %>%
+  filter(yr == "2022")
+
+free_agents<-free_agents %>%
+  left_join(pres_adv_stats,by=c("Player" = "player"))
+
+
+
+##### SELECT DEFENDED FG %
+Threep_pdx<-read.csv("ThreePoint_PDX.csv")
+POR_def_shooting<-read.csv("POR_defended shooting.csv")
+
+POR_def_shooting$tm<-"POR"
+
+POR_def_shooting<-POR_def_shooting %>%
+  left_join(team_defense,by=c("tm" = "team_abbreviation"))
+
+Threep_pdx<-Threep_pdx %>%
+  left_join(plyr,by=c("PLAYER" = "player_name")) 
+
+
+### salary 
+nba_sal<-read.csv("nba_salary_current.csv")
+                      
+nba_sal<-nba_sal %>%
+  mutate(Player =case_when(
+    Player == "Derrick Jones" ~ "Derrick Jones Jr.",
+    Player == "Dennis Smith" ~ "Dennis Smith Jr.",
+    Player == "Enes Kanter" ~ "Enes Freedom",
+    Player == "Tim Hardaway" ~ "Tim Hardaway Jr.",
+    TRUE ~ Player))
+
+
+
+nba_sal<-nba_sal %>%
+  left_join(pres_adv_stats,by=c("Player" = "player"))
+
+
+```
+
+This report will encompass some key visuals for storylines throughout the season. 
+
+The report is broken down into to major sections:\
+1. Team Analysis \
+2. Players Analaysis \
+3. Specific Storylines \
+
+## Team Analysis
+This will detail where the Portland Trail Blazers are at with key team trend metrics on the year compared to other NBA teams.
+
+### Four Factor Analysis
+Four Factors was invented by Dean Oliver to measure team's offense & defensive strategies. These four factors have a high correlation to wins and losses in a given season. The factors are weighted the following way: \
+1. Shooting (40%) \
+2. Turnovers (25%) \
+3. Rebounding (25%) \
+4. Free Throws (25%) \
+
+These 4 metrics can highlight a team strengths and weaknesses easily. Currently the Blazers rank near the bottom of the league in defensive effective field goal percentage. 
+
+```{r a1,echo=FALSE,message=FALSE,warning=FALSE}
+
+### finish analysis
+
+
+
+FF_final %>%
+  select(Team,Year, `eFG%_OFF_Rank`,`eFG%_DEF_Rank`,`TOV%_OFF_Rank`,`TOV%_DEF_Rank`,`ORB%_OFF_Rank`,`DRB%_DEF_Rank`,`FT/FGA_OFF_Rank`,`FT/FGA_DEF_Rank`) %>%
+  rename(`OFF eFG %` = `eFG%_OFF_Rank`,
+         `DEF eFG %` = `eFG%_DEF_Rank`,
+         `OFF Turnovers per Poss` = `TOV%_OFF_Rank`,
+         `DEF Turnovers per Poss` = `TOV%_DEF_Rank`,
+         `OFF Rebounding %` = `ORB%_OFF_Rank`,
+         `DEF Rebounding %` = `DRB%_DEF_Rank`,
+         `OFF Free Throw Pct %` = `FT/FGA_OFF_Rank`,
+         `DEF Free Throw Pct %` = `FT/FGA_DEF_Rank`
+         ) %>%
+  pivot_longer(cols = c(`OFF eFG %`,`DEF eFG %`,`OFF Turnovers per Poss`,`DEF Turnovers per Poss`,`OFF Rebounding %`,`DEF Rebounding %`,`OFF Free Throw Pct %`,`DEF Free Throw Pct %`)) %>%
+pivot_wider(id_cols = c(Team,name),names_from = Year,values_from=value) %>%
+  filter(Team == "POR") %>%
+  select(-Team) %>%
+  kable(caption = "Blazers Four Factors NBA Rank", table.attr = "class=\"striped\"",
+  format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+  
+  
+  
+  
+#### add Wins prediction
+
+
+
+```
+
+
+### Team Splits
+```{r a2,echo=FALSE,message=FALSE,warning=FALSE}
+
+TeamDash %>%
+  mutate(`3P/G` = round(FG3M/GP,1),
+         `3PA/G` = round(FG3A/GP,1),
+         `FTA/G` = round(FTA/GP,1),
+         `OREB/G` = round(OREB/GP,1),
+         `DREB/G` = round(DREB/GP,1),
+         `REB/G` = round(REB/GP,1),
+         `AST/G` = round(AST/GP,1),
+         `TOV/G` = round(TOV/GP,1),
+         `STL/G` = round(STL/GP,1),
+         `BLK/G` = round(BLK/GP,1),
+         `PTS/G` = round(PTS/GP,1)) %>%
+  select(GROUP_VALUE,GP,W,L,`PTS/G`,FG_PCT,`3PA/G`,FG3_PCT,`FTA/G`,FT_PCT,
+         `REB/G`,`DREB/G`,`OREB/G`,`AST/G`,`TOV/G`,`STL/G`,`BLK/G`) %>%
+  kable(caption = "Blazers Team Splits", table.attr = "class=\"striped\"",
+  format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+
+```
+
+### Season Spotlight: Team Defense
+So far Blazers ability to lower field goal percentage YoY is flat, which isn't a good sign given it was a focus in the offseason. 
+
+
+
+```{r a3,echo=FALSE,message=FALSE,warning=FALSE}
+
+team_defense$FG_pct_improvement<-team_defense$d_fg_pct - team_defense$prev_d_fg_pct
+
+team_defense %>%
+  ggplot(aes(x=d_fg_pct,y=prev_d_fg_pct,label=team_abbreviation)) +
+  #geom_text_repel(size = 2,nudge_y=-0.5) + 
+  geom_image(aes(image = logo),size=0.05,by='height') +
+  xlab("2021/22 Opp FG%") +
+  ylab("2020/21 Opp FG%") +
+  geom_smooth(method="lm",formula=y~x,se=FALSE,linetype="dashed",color="light grey") +
+  labs(title = "Team Defense Improvement YoY: Opp FG%",
+       caption = "HoopR Data: 2020-22 season") +
+  theme_fivethirtyeight() +
+    theme(axis.title = element_text(),
+        legend.position = "none",
+        plot.title = element_text(size=10),
+        plot.subtitle = element_text(size=8)) +
+  coord_cartesian(xlim =c(.42, .49), ylim = c(.42, .49)) +
+  scale_y_continuous(breaks=seq(.42,.49,.01)) +
+  scale_x_continuous(breaks=seq(.42,.49,.01))
+
+
+```
+
+####  Offensive vs. Defensive Ratio
+This chart helps to see which teams are most balanced in terms of offensive & defensive rating. 
+
+GSW has looked dominant early in the season. 
+```{r a4,echo=FALSE,message=FALSE,warning=FALSE}
+
+FF %>%
+  ggplot(aes(x=ORtg,y=DRtg,label=mascot)) +
+  #geom_text_repel(size = 2,nudge_y=-0.5) + 
+  geom_image(aes(image = logo),size=0.038,by='height') +
+  xlab("Offensive Rating") +
+  ylab("Defenisve Rating") +
+  geom_smooth(method="lm",formula=y~x,se=FALSE,linetype="dashed",color="light grey") +
+  labs(title = "2021-22 Team Offensive vs. Defensive Rating",
+       caption = "HoopR Data: 2021-22 season") +
+  theme_fivethirtyeight() +
+    theme(axis.title = element_text(),
+        legend.position = "none",
+        plot.title = element_text(size=10),
+        plot.subtitle = element_text(size=8)) +
+  coord_cartesian(xlim =c(95, 115), ylim = c(95, 115)) +
+ scale_y_continuous(breaks=seq(95,115,5)) +
+ scale_x_continuous(breaks=seq(95,115,5))
+
+
+```
+
+#### Team Pace of Play
+Lakers, Kings, and Rockets have the highest amount of possessions per game. 76ers are slowest pace of play.  
+
+```{r a5,echo=FALSE,message=FALSE,warning=FALSE}
+
+
+FF %>%
+  ggplot(aes(x=PACE.Off,y=PACE.Def,label=mascot)) +
+  #geom_text_repel(size = 2,nudge_y=-0.5) + 
+  geom_image(aes(image = logo),size=0.038,by='height') +
+  xlab("Offensive Pace (Possessions per Minute played)") +
+  ylab("Defenisve Pace (Possessions per Minute played)") +
+  geom_smooth(method="lm",formula=y~x,se=FALSE,linetype="dashed",color="light grey") +
+  labs(title = "2021-22 Team Offensive vs. Defensive Pace of Play",
+       caption = "HoopR Data: 2021-22 season") +
+  theme_fivethirtyeight() +
+    theme(axis.title = element_text(),
+        legend.position = "none",
+        plot.title = element_text(size=10),
+        plot.subtitle = element_text(size=8))+
+  coord_cartesian(xlim =c(2.0, 2.20), ylim = c(2.0, 2.20)) +
+ scale_y_continuous(breaks=seq(2.0,2.20,.05)) +
+ scale_x_continuous(breaks=seq(2.0,2.20,.05))
+
+```
+
+## Player Analysis
+
+
+### Premier G/SF Comparison
+
+It's very early but Ja Morant & DeMar DeRozan looks like an MVP candidate for his shooting ability. CJ is currently shooting similar to LeBron James and Steph Curry (All former all-stars)
+
+```{r a6,echo=FALSE,message=FALSE,warning=FALSE}
+
+############ FIX SINCE THE DATA ISN"T UP TO DATE ############
+
+### >30 Min/G in NBA
+s_totals %>%
+  filter(season==2022,
+         min_g > 30,
+         fga_g > 15,
+         athlete_position_name %in% c("Guard","Shooting Guard","Point Guard","Small Forward")) %>% #,
+         #team_name %in% c("Trail Blazers","Lakers","Jazz","Grizzlies","Suns","Nuggets","Clippers","Mavericks")) %>%
+  ggplot(aes(x=FG_pct,y=fga_g,label=athlete_display_name)) +
+  geom_text_repel(size = 2,nudge_y=-0.6) + 
+  geom_image(aes(image = playerImg.URL),size=0.08,by='height') +
+  xlab("FG Pct") +
+  ylab("FGA/G") +
+  geom_smooth(method="lm",formula=y~x,se=FALSE,linetype="dashed",color="light grey") +
+  labs(title = "2022 Shooting Efficiency amongst Premier G/SF",
+       subtitle = "@QuinnsWisdom",
+       caption = "HoopR Data: >30 min/g  and >15 FGA/g") +
+  theme_fivethirtyeight() +
+    theme(axis.title = element_text(),
+        legend.position = "none",
+        plot.title = element_text(size=10),
+        plot.subtitle = element_text(size=8))
+
+ggsave("perim_scorer.png")
+
+         
+         
+```
+
+### Premier PF/Cs Comparison
+Comparison of efficiency shooters for team's PF/C.
+
+Nurk is comparing similar to defensive centers such as Evan Mobley, DeAndre Ayton, Myles Turner and Steven Adams. Julius Randle is showing early signs of regressing from his prior MVP-caliber year. 
+```{r a7, echo=FALSE,warning=FALSE,message=FALSE}
+
+### >30 Min/G in NBA
+s_totals %>%
+  filter(season==2022,
+         min_g > 20,
+         fga_g > 8,
+         athlete_position_name %in% c("Forward","Power Forward","Center")) %>% #,
+         #team_name %in% c("Trail Blazers","Lakers","Jazz","Grizzlies","Suns","Nuggets","Clippers","Mavericks")) %>%
+  ggplot(aes(x=FG_pct,y=fga_g,label=athlete_display_name)) +
+  geom_text_repel(size = 2,nudge_y=-0.6) + 
+  geom_image(aes(image = playerImg.URL),size=0.1,by='width') +
+  xlab("FG Pct") +
+  ylab("FGA/G") +
+  geom_smooth(method="lm",formula=y~x,se=FALSE,linetype="dashed",color="light grey") +
+  labs(title = "2022 Shooting Efficiency amongst Premier Scoring Forwards/Centers",
+       subtitle = ">20 min/g  and >8 FGA/g",
+       caption = "HoopR Data: 2021-22 season") +
+  theme_fivethirtyeight() +
+    theme(axis.title = element_text(),
+        legend.position = "none",
+        plot.title = element_text(size=10),
+        plot.subtitle = element_text(size=8))
+
+
+
+
+
+```
+
+### Blazers Player Advanced Stats
+Advanced Stats Comparison helps to show how player's contribute to overall team's success.  
+
+Currently, CJ, Norm and Ant are the most valuable players to the Blazers roster. Nurk is the most valuable defensive player to the team (0.3 DWS). Ant & Norm are the most value on offense (>0.7 OWS & >.600 True Shooting Percentage) 
+
+RoCo & Dame have been below average players early on in the season
+```{r a8, echo=FALSE,warning=FALSE,message=FALSE}
+
+
+
+POR_stats<-Adv_stats %>%
+  arrange(desc(vorp),desc(per)) %>%
+  filter(tm == "POR" &
+           yr == "2022") %>%
+  mutate(`mp/g` = mp/g) %>%
+  select(player,pos,age.x,playerImg.URL,vorp,per,ws,ows,dws,tspercent,usgpercent) 
+
+POR_stats$playerImg.URL<-ifelse(POR_stats$player == "Jusuf Nurkić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203994.png",POR_stats$playerImg.URL)
+
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    player = "Player",
+    pos = "Position",
+    age.x = "Age",
+    playerImg.URL = "",
+    vorp = "VORP",
+    per = "PER",
+    ws = "WS",
+    ows = "OWS",
+    dws = "DWS",
+    tspercent = "True Shooting Pct",
+    usgpercent = "Usage Pct"
+  ) %>% 
+  data_color(
+    columns = vars(vorp),
+    colors = scales::col_numeric(
+      palette = c("#0000FF","#FFFFFF","#E03A3E"),
+      domain = c(-1, 1)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(player)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "VORP = Value over replacement player",
+    locations = cells_column_labels(
+      columns = vorp
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "PER = Player efficiency rating per-minute of productivity",
+    locations = cells_column_labels(
+      columns = per
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "WS = Player's credit to total wins; https://www.basketball-reference.com/about/ws.html",
+    locations = cells_column_labels(
+      columns = ws
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "True Shooting Pct = Measures shooting efficiency",
+    locations = cells_column_labels(
+      columns = tspercent
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Usage Percentage = Percentage of player involvement in team plays while on floor",
+    locations = cells_column_labels(
+      columns = usgpercent
+    )
+  ) %>%
+     tab_header(
+    title = md("Portland Trail Blazers Advanced Stats Comparison"),
+    subtitle = md("2021-22 Season")
+    ) 
+
+}  
+
+
+a<-POR_stats %>% 
+  slice(1:15) %>% 
+  tab_function()
+
+
+a
+
+
+
+
+
+
+```
+
+### Blazers Hustle Stats Current Season
+Hustle stats help to show contributions that don't show up in a traditional box score. 
+
+Nurk is near the top of the league in "Hustle" stats; creating a very high amount Screen Assists (points off assists) per game. Given he compares to Ayton & Turner as mentioned earlier, his production is very much reliant on his involvement in the Pick & Roll or High-Post offense. 
+```{r a9,echo=FALSE,message=FALSE,warning=FALSE}
+
+hustle$playerImg.URL <- paste("https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/",hustle$PLAYER_ID,".png", sep="")
+
+
+
+
+
+
+hustle_tab<-hustle %>%
+  select(-PLAYER_ID,-TEAM_ID) %>%
+  mutate(MIN = as.integer(MIN),
+         CONTESTED_SHOTS = as.integer(CONTESTED_SHOTS),
+         G = as.integer(G),
+         DEFLECTIONS = as.integer(DEFLECTIONS),
+         BOX_OUTS = as.integer(BOX_OUTS),
+         SCREEN_AST_PTS = as.integer(SCREEN_AST_PTS),
+         LOOSE_BALLS_RECOVERED = as.integer(LOOSE_BALLS_RECOVERED)) %>%
+  select(PLAYER_NAME,TEAM_ABBREVIATION,playerImg.URL,MIN,G,CONTESTED_SHOTS,DEFLECTIONS,BOX_OUTS,SCREEN_AST_PTS,LOOSE_BALLS_RECOVERED) %>%
+  mutate(CONTESTED_SHOTS_G = round(CONTESTED_SHOTS/G,1),
+         `CS NBA Rank` = dense_rank(-CONTESTED_SHOTS_G),
+         DEFLECTIONS_G = round(DEFLECTIONS/G,1),
+         `Deflect NBA Rank` = dense_rank(-DEFLECTIONS_G),
+         BOX_OUTS_G = round(BOX_OUTS/G,1),
+         `BO NBA Rank` = dense_rank(-BOX_OUTS_G),
+         SCREEN_AST_PTS_G = round(SCREEN_AST_PTS/G,1),
+         `SA NBA Rank` = dense_rank(-SCREEN_AST_PTS),
+          LB_G = round(LOOSE_BALLS_RECOVERED/G,1),
+         `LB Rank` = dense_rank(-LOOSE_BALLS_RECOVERED)) %>%
+  mutate(`Hustle Rank Avg` = round((`CS NBA Rank` + `Deflect NBA Rank` + `BO NBA Rank` + `SA NBA Rank`  + `LB Rank`)/5,1)) %>%
+ filter(TEAM_ABBREVIATION == "POR") %>%
+  select(-MIN,-TEAM_ABBREVIATION,-CONTESTED_SHOTS,-G,-DEFLECTIONS,-BOX_OUTS,-SCREEN_AST_PTS,-LOOSE_BALLS_RECOVERED) %>%
+  arrange(`Hustle Rank Avg`) %>%
+  rename(Player = PLAYER_NAME,
+        `Contested Shots/G` = CONTESTED_SHOTS_G,
+        `CS Rank` = `CS NBA Rank`,
+        `Deflections/G` = DEFLECTIONS_G,
+        `DFL Rank` = `Deflect NBA Rank`,
+        `Box Outs/G` = BOX_OUTS_G,
+        `BO Rank` = `BO NBA Rank`,
+        `Screen Assists Pts/G` = SCREEN_AST_PTS_G,
+        `SA Rank` = `SA NBA Rank`
+        ) %>%
+  select(Player,playerImg.URL,`Hustle Rank Avg`,`CS Rank`,`DFL Rank`,`BO Rank`,`SA Rank`,`LB Rank`)
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    `Hustle Rank Avg` = "Hustle RK",
+    `CS Rank` = "Contested Shots RK",
+    `DFL Rank` = "Deflections RK",
+    `BO Rank` = "Boxouts RK",
+    `SA Rank` = "Screen Assists RK",
+    `LB Rank` = "Loose Balls Recovered RK",
+     playerImg.URL = "",
+    Player = "Name",
+  ) %>% 
+  data_color(
+    columns = vars(`Hustle Rank Avg`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#af8dc3"),
+      domain = c(75, 1)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(`Hustle Rank Avg`, Player)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>%
+     tab_header(
+    title = md("Portland Trail Blazers Hustle Stats (2021-22 NBA Ranks)"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Hustle Rank Avg = Mean NBA avg for 5 hustle metrics listed",
+    locations = cells_column_labels(
+      columns = `Hustle Rank Avg`
+    )) %>%
+    tab_footnote(
+    footnote = "Contested Shots = The number of times a defensive player or team closes out and raises a hand to contest a shot prior to its release",
+    locations = cells_column_labels(
+      columns = `CS Rank`
+    )) %>%
+  tab_footnote(
+    footnote = "Deflections = When a defender hits a piece of the basketball either on purpose or inadvertently",
+    locations = cells_column_labels(
+      columns = `DFL Rank`
+    )) %>%
+  tab_footnote(
+    footnote = "Boxouts = When a basketball player tries to establish a better rebounding position than their opponent",
+    locations = cells_column_labels(
+      columns = `BO Rank`
+    )) %>%
+  tab_footnote(
+    footnote = "Screen Assists = Screens that directly lead to points scored",
+    locations = cells_column_labels(
+      columns = `SA Rank`
+    )) %>%
+  tab_footnote(
+    footnote = "Loose Balls Recovered = The number of times a player or team gains sole possession of a live ball that is not in the control of either team",
+    locations = cells_column_labels(
+      columns = `LB Rank`
+    ))
+
+}  
+
+
+b<-hustle_tab %>% 
+  slice(1:12) %>% 
+  tab_function()
+
+
+b
+
+
+
+
+
+
+  
+
+
+
+
+
+
+```
+
+
+
+### Player Pairs Analysis
+Simons & Nance Jr. have become key guys off the bench to spark the team. 
+
+A Simons, Powell, McCollum, Nance 2nd rotation could turnout to be pretty effective for the Blazers given the 2 way ability of this squad to score and defend. Nance gives you extra possessions given his defensive presence (more so than RoCo at this point in the season)
+
+Little will have to continue to improve his defensive game when paired with starters like Dame & Nurkic given their defensive deficiencies otherwise Nance would get the nod down the stretch. 
+```{r a11,echo=FALSE,message=FALSE,warning=FALSE}
+
+por_adv_lines<-adv_pairs %>%
+  filter(team_abbreviation == "POR")
+
+por_adv_lines %>%
+  select(group_name,min,poss,e_off_rating,e_def_rating,e_net_rating,pace_per40) %>%
+  arrange(desc(poss)) %>%
+  filter(poss > 500) %>%
+  head(15L) %>%
+  kable(caption = "Blazer Pairings Efficiency Rating") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  footnote(general = ">300 possessions; Top 15")
+
+
+```
+
+## Specialty Narratives 
+
+### CJ an All-Star? 
+There will be 24 all stars but we are showing top 40 players in the league to highlight potential snubs. The data is organized by the highest VORP (Value over replacement player) and then PER in-case of VORP ties. 
+
+CJ currently is not in the top VORP for giving him All-Star consideration. 
+
+Positive Surprises in the season so far: \
+-John Collins \
+-Miles Bridges \
+-Montrezl Harrell \
+-Richaun Holmes \
+-Dejounte Murray \
+
+```{r a12,echo=FALSE,message=FALSE,warning=FALSE}
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Nikola Jokić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203999.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Jonas Valančiūnas","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/202685.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Luka Dončić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/1629029.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Robert Williams","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/1629057.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Jusuf Nurkić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203994.png",Adv_stats$playerImg.URL)
+
+
+
+a<-Adv_stats %>%
+  filter(yr == "2022") %>%
+#  filter(Adv_stats$player != "Robert Williams III") %>%
+  arrange(desc(vorp),desc(per)) %>%
+  mutate(n  = row_number(),
+         `mp/g` = round(mp/g,1)) %>%
+  filter(`mp/g` > 15) %>%
+  head(40L) %>%
+  select(n,vorp,player,pos,playerImg.URL,tm,g,mp,`mp/g`,per,ows,dws,ws,ws_48) 
+
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    n = "RK",
+    playerImg.URL = "",
+    player = "Name",
+  ) %>% 
+  data_color(
+    columns = vars(vorp),
+    colors = scales::col_numeric(
+      palette = c("#af8dc3", "#f7f7f7","#7fbf7b"),
+      domain = NULL
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(n, player)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Top VORP in NBA (2021-22)"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) 
+
+}  
+
+
+b<-a %>% 
+  slice(1:40) %>% 
+  tab_function()
+
+b
+
+b %>%
+  gtsave(
+    "tab_1.html", inline_css = FALSE
+  )
+
+
+
+
+
+### row -1 
+
+```
+
+
+### Norm vs. Trent Tracker
+Trent Jr. has a slightly higher usage percentage but Powell has a higher efficiency and better shooter than Trent thus far in the season. Trent has played much better defense this year (0.5 DWS)
+
+```{r a13,echo=FALSE,message=FALSE,warning=FALSE}
+
+norm_comp<-Adv_stats %>%
+  filter(player %in% c("Norman Powell","Gary Trent Jr."),
+         yr == 2022) %>%
+  mutate(`mp/g` = round(mp/g,1),
+         ws_48 = round(ws_48,1),
+         tspercent = round(tspercent,3),
+         x3par = round(x3par,1),
+         ftr = round(ftr,1)) %>%
+  select(-x,-x_2) %>%
+  select(player,pos,playerImg.URL,tm,g,mp,`mp/g`,ws,ws_48,vorp,ows,dws,per,tspercent,x3par,ftr,trbpercent,usgpercent) %>%
+  arrange(desc(ws))
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    playerImg.URL = "",
+    player = "Name",
+  ) %>% 
+  data_color(
+    columns = vars(ws),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#af8dc3"),
+      domain = NULL
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(player,pos)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) 
+
+}  
+
+
+norm_comp %>% 
+  slice(1:40) %>% 
+  tab_function()
+
+
+
+
+```
+
+
+
+### FA Performance Tracker
+Melo is off to a great year for the Lakers (All-star consideration) but Powell has been playing pretty similar just that Melo is playing a bit better defense. Powell will need to continue to work on his defensive contribution to the team (something that has continued to be a focus for the Blazers)
+
+```{r a15,echo=FALSE,message=FALSE,warning=FALSE}
+
+free_agents %>%
+#  filter(OTm == "POR" |
+#           NTm == "POR") %>%
+  filter(complete.cases(pos),
+         yr == 2022) %>%
+  arrange(desc(vorp)) %>%
+  select(Player,pos,age.x,OTm,NTm,g,mp,vorp,ws,ws_48,ows,dws,per,tspercent,x3par,ftr,usgpercent) %>%
+  mutate(tspercent = round(tspercent,2),
+         x3par = round(x3par,2),
+         ftr = round(ftr,2)) %>%
+  kable(caption = "Free Agent Comparison (Past & New)",size = 8) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  footnote(general = c("If a player isn't listed, they've yet to log minutes in the 2021-22 season"))
+  
+
+
+```
+
+
+```{r a16,echo=FALSE}
+
+#library(shiny)
+#runGitHub("ballr", "toddwschneider")
+
+```
+
+```{r a17,echo=FALSE,warning=FALSE,message=FALSE}
+
+library(lubridate)
+POR_bx<-bx %>%
+  dplyr::filter(bx$team_abbreviation == "POR")
+
+por_players<-bx %>%
+  filter(did_not_play == FALSE,
+         team_abbreviation == "POR") %>%
+  group_by(athlete_display_name,season,starter) %>%
+  summarize(games = n(),
+            pts = sum(pts))
+
+
+POR_bx %>%
+  group_by(starter,season) %>%
+  summarize(points = sum(pts),
+            games = n_distinct(game_id),
+            points_g = sum(pts)/n_distinct(game_id)) %>%
+  
+  
+  pivot_wider(id_cols = c(season),names_from = starter,values_from = c(points,games,points_g)) %>%
+  mutate(`Bench PtsPct` = points_FALSE/(points_TRUE + points_FALSE)) %>%
+  select(season,points_g_FALSE,`Bench PtsPct`) %>%
+  rename(Year = season,
+         `Bench Pts/G` = points_g_FALSE,
+         `Bench Pts %` = `Bench PtsPct`) %>%
+  mutate(`Bench Pts/G` = round(`Bench Pts/G`,1),
+         `Bench Pts %` = round(`Bench Pts %`,3))
+
+
+  
+  
+bx %>%
+  filter(did_not_play == FALSE,
+         team_abbreviation == "POR") %>%
+  group_by(athlete_display_name,season,starter) %>%
+  summarize(games = n(),
+            pts = sum(pts),
+            min = min(game_date)) %>%
+  mutate(month = month(as.POSIXlt(min, format="%d/%m/%Y")),
+         before = ifelse(month %in% c(10,11,12,1),TRUE,FALSE)) %>%
+  filter(before == TRUE) %>%
+  group_by(starter,season) %>%
+  summarize(points = sum(pts),
+            games = sum(games),
+            points_g = sum(pts)/sum(games)) %>%
+  pivot_wider(id_cols = c(season),names_from = starter,values_from = c(points,games,points_g)) %>%
+  mutate(`Bench PtsPct` = points_FALSE/(points_TRUE + points_FALSE)) %>%
+  select(season,points_g_FALSE,`Bench PtsPct`) %>%
+  rename(Year = season,
+         `Bench Pts/G` = points_g_FALSE,
+         `Bench Pts %` = `Bench PtsPct`) %>%
+  mutate(`Bench Pts/G` = round(`Bench Pts/G`,1),
+         `Bench Pts %` = round(`Bench Pts %`,3)) %>%
+  filter(Year >= 2013) %>%
+  ggplot(aes(x=Year,y=`Bench Pts %`)) +
+  geom_col(color="black",fill="red") +
+  geom_text(aes(label = `Bench Pts %`), hjust = 1.5,color="white") +
+  coord_flip() +
+  labs(title = "Blazers Points Production by Bench per Season",
+       subtitle = "Showing Neil Olshey Era (named GM on June 2012)",
+       caption = "Filters out players acquired after January in a given season") +
+  #coord_cartesian(xlim =c(2013,2022)) +
+  scale_x_continuous(breaks=seq(2013,2022,1))
+
+
+
+```
+
+
+Blazers currently 2nd in 
+```{r a18,echo=FALSE}
+
+def_reb<-bx %>%
+  filter(team_abbreviation == "POR") %>%
+  group_by(athlete_display_name,season,athlete_headshot_href) %>%
+  summarize(g = sum(g),
+            gs = sum(gs),
+            min_g = round(sum(min)/sum(g),1),
+          dreb_g = round(sum(dreb)/sum(g),1),
+          oreb_g = round(sum(oreb)/sum(g),1)) %>%
+  filter(g > 20) %>%
+  ungroup() %>%
+  arrange(desc(dreb_g)) %>%
+  head(15L) %>%
+  mutate(n = row_number()) %>%
+  select(n,athlete_display_name,season,athlete_headshot_href,dreb_g,g,gs,min_g,oreb_g)
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(athlete_headshot_href)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    n = "RK",
+    athlete_headshot_href = "",
+    season = "Season",
+    athlete_display_name = "Name",
+    dreb_g = "DREB/G",
+    oreb_g = "OREB/G",
+    g = "Games",
+    gs = "Games Started",
+    min_g = "Min/G"
+  ) %>% 
+  data_color(
+    columns = vars(dreb_g),
+    colors = scales::col_numeric(
+      palette = c("#af8dc3", "#f7f7f7","#7fbf7b"),
+      domain = c(5,10)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(n, athlete_display_name,season)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Defensive Rebounds Per Game Since 2010"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Using Hollinger Team Statistics pulled from ESPN",
+    locations = cells_column_labels(
+      columns = dreb_g
+    ))
+
+}  
+
+
+def_reb %>% 
+  slice(1:20) %>% 
+  tab_function()
+
+
+
+```
+
+
+```{r a19,echo=FALSE,message=FALSE}
+
+tdef_reb<-tbx %>%
+  filter(team_abbreviation == "POR") %>%
+  group_by(team_abbreviation,season,team_logo) %>%
+  mutate(defensive_rebounds = as.integer(defensive_rebounds)) %>%
+  summarize(g = n_distinct(game_id),
+            dreb = sum(defensive_rebounds),
+            dreb_g = round(sum(defensive_rebounds)/n_distinct(game_id),1)) %>%
+  filter(g > 20) %>%
+  arrange(desc(season)) %>%
+  ungroup() %>%
+  mutate(n = row_number()) %>%
+  head(30L)%>%
+  select(n,team_abbreviation,season,team_logo,dreb_g,g,dreb)
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(team_logo)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    n = "RK",
+    team_logo = "",
+    season = "Season",
+    team_abbreviation = "Team",
+    dreb_g = "DREB/G",
+    g = "Games",
+    dreb = "DREB",
+  ) %>% 
+  data_color(
+    columns = vars(dreb_g),
+    colors = scales::col_numeric(
+      palette = c("#af8dc3", "#f7f7f7","#7fbf7b"),
+      domain = c(25,40)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(n, team_abbreviation,season)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Team Defensive Rebounds Per Game Since 2010"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Defensive Rebounds Per Game for those with at least 20 games played",
+    locations = cells_column_labels(
+      columns = dreb_g
+    ))
+
+}  
+
+
+tdef_reb %>% 
+  slice(1:30) %>% 
+  tab_function()
+
+
+
+```
+
+
+```{r a20,echo=FALSE}
+
+
+
+pordef_rtg<-FF_final %>%
+  filter(Team == "POR") %>%
+  mutate(NetRtg = round(ORtg - DRtg,1),
+         PACE.Def = round(PACE.Def,2)) %>%
+  select(Year,logo,`eFG%_DEF`,DRtg,ORtg,NetRtg,PACE.Def) 
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(logo)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    logo = "",
+    Year = "Season",
+    DRtg = "DEF RTG",
+    ORtg = "OFF RTG",
+    NetRtg = "Net RTG",
+    PACE.Def = "DEF PACE",
+  ) %>% 
+  data_color(
+    columns = vars(`eFG%_DEF`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#FF0000"),
+      domain = c(45,56)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(Year)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Opponent's Effective Field Goal Percentage (eFG%) Since 2010"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Using John Hollinger's Defensive Rating from ESPN.com",
+    locations = cells_column_labels(
+      columns = DRtg
+    )) %>%
+  tab_footnote(
+    footnote = "Using John Hollinger's Offensive Rating from ESPN.com",
+    locations = cells_column_labels(
+      columns = ORtg
+    )) %>%
+  tab_footnote(
+    footnote = "Defensive Points Allowed Per Possessions",
+    locations = cells_column_labels(
+      columns = PACE.Def
+    )) %>%
+  tab_footnote(
+    footnote = "Effective Field Goal (EFG) Percentage Allowed on Defense; EFG is a statistic that adjusts field goal percentage to account for the fact that three-point field goals count for three points while field goals only count for two points",
+    locations = cells_column_labels(
+      columns = `eFG%_DEF`
+    )) 
+
+}  
+
+
+pordef_rtg %>% 
+  slice(1:30) %>% 
+  tab_function()
+
+
+```
+
+
+```{r a21,echo=FALSE,message=FALSE}
+
+tdef_reb<-tbx %>%
+  filter(team_abbreviation == "POR") %>%
+  group_by(team_abbreviation,season,team_logo) %>%
+  mutate(defensive_rebounds = as.integer(defensive_rebounds)) %>%
+  summarize(g = n_distinct(game_id),
+            dreb = sum(defensive_rebounds),
+            dreb_g = round(sum(defensive_rebounds)/n_distinct(game_id),1)) %>%
+  filter(g > 20) %>%
+  arrange(desc(season)) %>%
+  ungroup() %>%
+  mutate(n = row_number()) %>%
+  head(30L)%>%
+  select(n,team_abbreviation,season,team_logo,dreb_g,g,dreb)
+
+```
+
+```{r a22,echo=FALSE,message=FALSE}
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Nikola Jokić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203999.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Jonas Valančiūnas","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/202685.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Luka Dončić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/1629029.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Robert Williams","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/1629057.png",Adv_stats$playerImg.URL)
+
+Adv_stats$playerImg.URL<-ifelse(Adv_stats$player == "Jusuf Nurkić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203994.png",Adv_stats$playerImg.URL)
+
+
+
+a<-Adv_stats %>%
+  filter(yr == "2022",draft_year == "2021") %>%
+#  filter(Adv_stats$player != "Robert Williams III") %>%
+  arrange(desc(vorp),desc(per)) %>%
+  mutate(
+         `mp/g` = round(mp/g,1)) %>%
+  filter(`mp/g` > 15) %>%
+  mutate(n = row_number()) %>%
+  head(40L) %>%
+  select(n,vorp,player,pos,playerImg.URL,tm,g,mp,`mp/g`,per,ows,dws,ws,ts_pct,pts) 
+
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    n = "RK",
+    playerImg.URL = "",
+    player = "Name",
+  ) %>% 
+  data_color(
+    columns = vars(vorp),
+    colors = scales::col_numeric(
+      palette = c("#af8dc3", "#f7f7f7","#7fbf7b"),
+      domain = c(3,0)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(n, player)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Top VORP in NBA Amongst Rookies (2021-22)"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Filtering for rookies w/ >15 minutes player per game",
+    locations = cells_column_labels(
+      columns = `mp/g`
+    )) 
+
+}  
+
+
+b<-a %>% 
+  slice(1:40) %>% 
+  tab_function()
+
+b
+
+b %>%
+  gtsave(
+    "tab_1.html", inline_css = FALSE
+  )
+
+```
+
+```{r a23,echo=FALSE,message=FALSE}
+
+
+
+por_shooting<-POR_def_shooting %>%
+  select(Season,logo,Team.DFG.,Team.FG.,Team.Diff..,Team.D3P.,Team.3P.,Team.3P.DIFF.) %>%
+  group_by(Season,logo) %>%
+  summarize(`Team DFG` = mean(Team.DFG.),
+            `Team FG` = mean(Team.FG.),
+            `Team DIFF` = mean(Team.Diff..),
+            `Team D3P` = mean(Team.D3P.),
+            `Team 3P` = mean(Team.3P.),
+            `Team 3P DIFF` = mean(Team.3P.DIFF.)) %>%
+  arrange(desc(Season)) %>%
+  ungroup() %>%
+  select(Season,logo,`Team DFG`,`Team FG`,`Team DIFF`,`Team D3P`,`Team 3P`,`Team 3P DIFF`) 
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(logo)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    logo = "",
+    Season = "Season",
+    `Team DFG` = "DFG %",
+    `Team FG` = "Opp FG %",
+    `Team DIFF` = "FG % Diff",
+    `Team D3P` = "D3P%",
+    `Team 3P` = "Opp 3P%",
+    `Team 3P DIFF` = "3P% Diff"
+  ) %>% 
+  data_color(
+    columns = vars(`Team DIFF`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#FF0000"),
+      domain = c(5,-5)
+    )
+  ) %>% 
+  data_color(
+    columns = vars(`Team 3P DIFF`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#FF0000"),
+      domain = c(5,-5)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(Season,logo)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Team Defense: Defended Shooting Percentage vs Actual Shooting Percentage"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Accounts for field goal percentage with a defender within 3 ft of the shooter",
+    locations = cells_column_labels(
+      columns = `Team DFG`
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of defended field gooal percentage to total opponent field goal percentage",
+    locations = cells_column_labels(
+      columns = `Team DIFF`
+    )) %>%
+  tab_footnote(
+    footnote = "Accounts for opponent's 3 points percentage with a defender within 3 ft of the shooter ",
+    locations = cells_column_labels(
+      columns = `Team D3P`
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of defended 3 point percentage versus total opponent 3 point percentage",
+    locations = cells_column_labels(
+      columns = `Team 3P DIFF`
+    )) 
+
+}  
+
+
+por_shooting %>% 
+  slice(1:30) %>% 
+  tab_function()
+
+
+ 
+
+
+```
+
+
+```{r a24,echo=FALSE,message=FALSE}
+
+tpdx<-Threep_pdx %>%
+  select(Season,PLAYER,Year,playerImg.URL,GP,DFGA,DFG.,FG.,DIFF.,FREQ) %>%
+  rename(`D3P%` = DFG.,
+         `D3PA` = DFGA,
+         `3P%` = FG.,
+         `3PDIFF` = DIFF.,
+         `3PFREQ` = FREQ) %>%
+  left_join(POR_def_shooting,by=c("PLAYER" = "PLAYER","Year" = "Yr")) %>%
+  group_by(Season.x,PLAYER,playerImg.URL) %>%
+  select(Season.x,PLAYER,playerImg.URL,GP.x,`D3PA`,`D3P%`,`3P%`,`3PDIFF`,`3PFREQ`,DFGA,DFG.,FG.,DIFF.)  %>%
+  rename(Season = Season.x,
+         GP = GP.x) %>%
+  arrange(DIFF.) %>%
+  ungroup() %>%
+  select(Season,PLAYER,playerImg.URL,GP,DFGA,DFG.,FG.,DIFF.,`D3PA`,`D3P%`,`3P%`,`3PDIFF`,`3PFREQ`) %>%
+  filter(GP > 20,
+         Season %in% c(2022))
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    playerImg.URL = "",
+    PLAYER = "Player",
+    DFGA = "DFGA",
+    DFG. = "DFG %",
+    FG. = "Opp FG %",
+    `DIFF.` = "FG % Diff",
+    `D3P%` = "D3P%",
+    `3P%` = "Opp 3P%",
+    `3PDIFF` = "3P% Diff"
+  ) %>% 
+  data_color(
+    columns = vars(`DIFF.`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#FF0000"),
+      domain = c(10,-5)
+    )
+  ) %>% 
+  data_color(
+    columns = vars(`3PDIFF`),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7","#FF0000"),
+      domain = c(15,-5)
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(Season,playerImg.URL)
+    )
+  ) %>% 
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Individual Player Defense: Defended Shooting Percentage vs Actual Shooting Percentage"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_footnote(
+    footnote = "Defended (within 3ft of shooter) Field Goals Per Game",
+    locations = cells_column_labels(
+      columns = DFGA
+    )) %>%
+  tab_footnote(
+    footnote = "Accounts for field goal percentage with a defender within 3 ft of the shooter",
+    locations = cells_column_labels(
+      columns = DFG.
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of defended field gooal percentage to total opponent field goal percentage",
+    locations = cells_column_labels(
+      columns = `DIFF.`
+    )) %>%
+  tab_footnote(
+    footnote = "Accounts for opponent's 3 points percentage with a defender within 3 ft of the shooter ",
+    locations = cells_column_labels(
+      columns = `D3P%`
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of defended 3 point percentage versus total opponent 3 point percentage",
+    locations = cells_column_labels(
+      columns = `3PDIFF`
+    )) %>%
+  tab_footnote(
+    footnote = "% of total defended shots that are 3 point shots per game",
+    locations = cells_column_labels(
+      columns = `3PFREQ`
+    )) 
+
+}  
+
+
+tpdx %>% 
+  slice(1:30) %>% 
+  tab_function()
+
+
+```
+
+```{r a25,echo=FALSE}
+
+
+library(scales)
+  #### covert salary pro rata 
+  # salary per game played
+free_agents<-free_agents %>%
+  mutate(AAV = as.numeric(AAV),
+         AAV_Prorata = AAV * (g/82)
+         )
+
+
+  
+## total 2021-22 salary cap: 112,414,000
+## total 2021-22 salary committed:  4,075,273,394 
+## prorata 37 games as of 1/2 https://www.teamrankings.com/nba/stat/games-played
+
+total_salary_val<-4075273394
+total_games<-37
+total_prorata_sal<-total_salary_val * (total_games/82)
+total_ws<-sum(pres_adv_stats$ws)
+total_ws_val<-total_prorata_sal/total_ws
+
+# free agent ws
+fa_ws<-sum(free_agents$ws,na.rm = T)
+#fa_aav_prorata<-sum(free_agents$AAV_Prorata,na.rm = T)
+#fa_val_ws<-sum(free_agents$AAV_Prorata,na.rm = T) /  sum(free_agents$ws,na.rm = T)
+  # calculate accrued value
+
+fa_ws_val_pct<-fa_ws/total_ws
+  
+free_agents<-free_agents %>%
+    mutate(accrued_val = free_agents$ws * total_ws_val,
+           net_val = accrued_val - AAV_Prorata,
+           mp_g = round(mp/g,1))
+
+
+
+## TOP 15 value  
+top_fa_sal<-free_agents %>%
+    select(Player,playerImg.URL,OTm,NTm,WS,ws,g,mp_g,AAV_Prorata,accrued_val,net_val) %>%
+    arrange(desc(net_val)) %>%
+    head(15L) %>%
+  mutate(
+         AAV_Prorata = scales::dollar(AAV_Prorata,largest_with_cents = 0),
+         accrued_val = scales::dollar(accrued_val,largest_with_cents = 0))
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    playerImg.URL = "",
+    OTm = "2020-21 Team",
+    NTm = "201-22 Team",
+    WS = "2020-21 Win Shares",
+    ws = "2021-22 Win Shares",
+    g = "Games",
+    mp_g = "Mins/Game",
+    AAV_Prorata = "2021-22 Prorated Salary",
+    accrued_val = "2021-22 Actual Value",
+    net_val = "2021-22 Net Value"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(Player,playerImg.URL)
+    )
+  ) %>% 
+
+  data_color(
+    columns = vars(net_val),
+    colors = scales::col_numeric(
+      palette = c("#ffffff", "#f2fbd2", "#c9ecb4", "#93d3ab", "#35b0ab"),
+      domain = NULL
+    )
+  ) %>% 
+  ##########################
+  ### This section changed
+  ##########################
+  fmt_currency(
+    # Define the columns to change
+    columns = vars(net_val),
+    # How many decimals to round to
+    decimals = 1,
+    # glue style pattern match & string conversion
+    pattern = "{x}"
+  ) %>%
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("Top 15 2021 Free Agent Values in 2021 Season"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_source_note("Recreating the following methodology: https://www.reddit.com/r/nba/comments/asthwp/oc_calculating_player_value_win_shares_vs_salary/") %>%
+  tab_footnote(
+    footnote = "2021-22 Salary Earned through 37 games",
+    locations = cells_column_labels(
+      columns = AAV_Prorata
+    )) %>%
+  tab_footnote(
+    footnote = "Win Shares x Avg Win Share Value (Total NBA Prorated Salary / Total Win Shares)",
+    locations = cells_column_labels(
+      columns = accrued_val
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of Actual Value vs Prorated Salary; Positive Net value would indicate player is worth more than what they are paid",
+    locations = cells_column_labels(
+      columns = net_val
+    )) 
+
+}  
+
+
+
+
+top_fa_sal %>% 
+  slice(1:30) %>% 
+  tab_function()
+  
+
+
+```
+
+
+
+```{r a26,echo=FALSE,message=FALSE}
+
+### BOTTOM 20 VALUE  
+  free_agents %>%
+    select(Player,OTm,NTm,WS,ws,g,mp_g,AAV_Prorata,accrued_val,net_val) %>%
+    arrange(net_val) %>%
+    head(20L) %>%
+  mutate(
+         AAV_Prorata = scales::dollar(AAV_Prorata,largest_with_cents = 0),
+         accrued_val = scales::dollar(accrued_val,largest_with_cents = 0),
+         net_val = scales::dollar(net_val,largest_with_cents = 0))
+ 
+ 
+
+```
+
+
+```{r a27,echo=FALSE,message=FALSE}
+
+
+#### ADD in all salaries for Portland ####
+
+
+ ##POR  
+  free_agents %>%
+    select(Player,OTm,NTm,WS,ws,g,mp_g,AAV_Prorata,accrued_val,net_val) %>%
+    filter(complete.cases(g),
+           complete.cases(AAV_Prorata)) %>%
+    arrange(desc(net_val)) %>%
+    filter(OTm == "POR" |
+           NTm == "POR") %>%
+  mutate(
+         AAV_Prorata = scales::dollar(AAV_Prorata,largest_with_cents = 0),
+         accrued_val = scales::dollar(accrued_val,largest_with_cents = 0)) 
+
+
+
+
+
+
+
+```
+
+```{r a28,echo=FALSE,message=FALSE}
+
+nba_sal$playerImg.URL<-ifelse(nba_sal$Player == "Jusuf Nurkić","https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190/203994.png",nba_sal$playerImg.URL)
+  #### covert salary pro rata 
+  # salary per game played
+nba_sal<-nba_sal %>%
+  mutate(AAV_Prorata_Current = X2021.22 * (35/82)
+         )
+
+
+nba_sal<-nba_sal %>%
+    mutate(accrued_val = nba_sal$ws * total_ws_val,
+           net_val = accrued_val - AAV_Prorata_Current,
+           mp_g = round(mp/g,1))
+
+
+
+## TOP 15 value  
+nba_sal_por<-nba_sal %>%
+    select(Player,playerImg.URL,Tm,ws,g,mp_g,AAV_Prorata_Current,accrued_val,net_val) %>%
+    arrange(desc(net_val)) %>%
+    filter(Tm == "POR",
+           complete.cases(g)) %>%
+  mutate(
+         AAV_Prorata_Current = scales::dollar(AAV_Prorata_Current,largest_with_cents = 0),
+         accrued_val = scales::dollar(accrued_val,largest_with_cents = 0))
+
+
+
+tab_function <- function(data, ...){
+  data %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(vars(playerImg.URL)),
+    fn = function(x){
+      web_image(
+        url = x,
+        height = px(30)
+      )
+    }
+  ) %>% 
+  cols_label(
+    playerImg.URL = "",
+    Tm = "Team",
+    ws = "Win Shares",
+    g = "Games Played",
+    mp_g = "Mins/Game",
+    AAV_Prorata_Current = "Prorated Salary",
+    accrued_val = "Estimated Value",
+    net_val = "Net Value"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(Player,playerImg.URL)
+    )
+  ) %>% 
+
+  data_color(
+    columns = vars(net_val),
+    colors = scales::col_numeric(
+      palette = c("red","#ffcccb", "#FFD580", "#D3D3D3", "#93d3ab", "#50C878"),
+      domain = NULL
+    )
+  ) %>% 
+  ##########################
+  ### This section changed
+  ##########################
+  fmt_currency(
+    # Define the columns to change
+    columns = vars(net_val),
+    # How many decimals to round to
+    decimals = 1,
+    # glue style pattern match & string conversion
+    pattern = "{x}"
+  ) %>%
+  tab_options(
+    column_labels.background.color = "white",
+    column_labels.font.weight = "bold",
+    table.border.top.width = px(3),
+    table.border.top.color = "transparent",
+    table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    column_labels.border.top.width = px(3),
+    column_labels.border.top.color = "transparent",
+    column_labels.border.bottom.width = px(3),
+    column_labels.border.bottom.color = "black",
+    data_row.padding = px(3),
+    source_notes.font.size = 12,
+    table.font.size = 12,
+    heading.align = "left",
+    ...
+  ) %>%
+  opt_table_font(
+    font = list(
+      google_font("Chivo"),
+      default_fonts()
+    )
+  ) %>% tab_header(
+    title = md("2021-22 Portland Prorated Salary vs Estimated Value"),
+    subtitle = md("Analysis: @QuinnsWisdom")
+    ) %>%
+  tab_source_note("Recreating the following methodology: https://www.reddit.com/r/nba/comments/asthwp/oc_calculating_player_value_win_shares_vs_salary/") %>%
+  tab_footnote(
+    footnote = "2021-22 Total Salary divided by 35 games (prorated regardless if the player played or not)",
+    locations = cells_column_labels(
+      columns = AAV_Prorata_Current
+    )) %>%
+  tab_footnote(
+    footnote = "Estimated Value based on Win Share performance: Win Shares x Avg Win Share Value (Total NBA Prorated Salary / Total Win Shares); Currently Avg Win Share Value is $3.3M per 1 Win Share",
+    locations = cells_column_labels(
+      columns = accrued_val
+    )) %>%
+  tab_footnote(
+    footnote = "Difference of Actual Value vs Prorated Salary; Positive Net value would indicate player is valued more than what they are paid",
+    locations = cells_column_labels(
+      columns = net_val
+    )) %>%
+  tab_footnote(
+    footnote = "Win Shares is a player statistic which attempts to divvy up credit for team success to the individuals on the team",
+    locations = cells_column_labels(
+      columns = ws
+    )) 
+
+}  
+
+
+
+
+nba_sal_por %>% 
+  slice(1:30) %>% 
+  tab_function()
+
+# Pat Connaughton has 9th best value in the league +$9.2M this season
+
+
+nba_sal %>%
+    select(Player,playerImg.URL,Tm,ws,g,mp_g,AAV_Prorata_Current,accrued_val,net_val) %>%
+    arrange(desc(net_val)) %>%
+  head(10L)
+
+nba_sal %>%
+  filter(Player == "Seth Curry")
+
+
+```
+
+
