@@ -15,5 +15,7 @@ https://htmlpreview.github.io/?https://github.com/qmaclean/https-qmaclean.github
 ![image](https://user-images.githubusercontent.com/20390351/177564678-f47decfe-4d7e-4fd3-83c1-f9774ee34e81.png)
 
 
-### Output of Visuals from Markdown (Twitter Posts)
+### Output of Visuals from Markdown (Twitter Posts/Website)
 https://twitter.com/search?q=%23PWEStats&src=typed_query&f=live
+
+https://www.pinwheelempire.com/analytics
